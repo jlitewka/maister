@@ -46,7 +46,7 @@ Full framework rule: `../orchestrator-framework/references/orchestrator-patterns
 2. **Create Task Items**: Use `TaskCreate` for all phases (see Phase Configuration), then set dependencies with `TaskUpdate addBlockedBy`
 3. **Create Task Directory**: `.maister/tasks/development/YYYY-MM-DD-task-name/`
 4. **Initialize State**: Create `orchestrator-state.yml` with task info and research reference
-5. **Set up Operator Dashboard** (orchestrator-patterns.md § 8) — first read `.maister/config.yml` and set `orchestrator.options.html_output` (default true if the file/key is absent). **When `html_output` is false, SKIP this entire step** — no `dashboard.html`, no `dashboard-data.js`, no browser auto-open — and proceed. Otherwise: copy `../orchestrator-framework/assets/dashboard.html` to the task root as `dashboard.html`, write the initial `dashboard-data.js` (all phases pending), then **auto-open it in the user's browser** (`open` / `xdg-open` / `start` per platform, passing the plain absolute filesystem path — NEVER a hand-built `file://` URL; on failure just print the path — never block). On resume: re-copy `dashboard.html` only if missing; regenerate `dashboard-data.js` from state; then auto-open it in the browser again (same opener as a new task — the OS focuses an already-open tab rather than duplicating).
+5. **Set up Operator Dashboard** (orchestrator-patterns.md § 8) — first read `.maister/config.yml` and set `orchestrator.options.html_output` (default true if the file/key is absent) and `orchestrator.options.mockup_format` (default `html`; read by Phase 4). **When `html_output` is false, SKIP this entire step** — no `dashboard.html`, no `dashboard-data.js`, no browser auto-open — and proceed. Otherwise: copy `../orchestrator-framework/assets/dashboard.html` to the task root as `dashboard.html`, write the initial `dashboard-data.js` (all phases pending), then **auto-open it in the user's browser** (`open` / `xdg-open` / `start` per platform, passing the plain absolute filesystem path — NEVER a hand-built `file://` URL; on failure just print the path — never block). On resume: re-copy `dashboard.html` only if missing; regenerate `dashboard-data.js` from state; then auto-open it in the browser again (same opener as a new task — the OS focuses an already-open tab rather than duplicating).
 6. **Discover project documentation**: Read `.maister/docs/INDEX.md` (if exists), extract ALL file paths from the "Project Documentation" section. This includes predefined docs (vision, roadmap, tech-stack, architecture) AND any user-added project docs (e.g., deployment.md, api-strategy.md). Store complete list as `project_context.project_doc_paths` in state.
 
 ### Step 4: Ingest Design Context
@@ -213,16 +213,24 @@ ask_user - "TDD red gate complete. Continue to Phase 4?"
 
 > **Phase entry self-check**: Before executing this phase, locate the `ask_user` tool call from the preceding phase in this conversation. If you cannot point to its call ID, STOP and fire that gate now. State updates (`completed_phases`, `TaskUpdate`) without a corresponding `ask_user` call are protocol violations — never paper over a missed gate by updating state.
 
-**Purpose**: Generate ASCII mockups showing UI integration
-**Execute**: Task tool - `maister-ui-mockup-generator` subagent
-**Output**: `analysis/design-context/ascii/ui-mockups.md` + appended entries in `analysis/design-context/INDEX.md`
-**State**: Update `phase_summaries.ui_mockups`, `phase_summaries.design`
+**Purpose**: Generate UI mockups (HTML by default, ASCII when configured) showing UI integration
+**Execute**: Skill tool - `maister-mockup-studio`
+**Output**: HTML → `analysis/design-context/mockups/*.html`; ASCII → `analysis/design-context/ascii/ui-mockups.md`. Both append entries to `analysis/design-context/INDEX.md`.
+**State**: Update `phase_summaries.ui_mockups`, `phase_summaries.design`, and `task_context.design_resources` (from mockup-studio's discovery)
 
 **Skip if**:
 - `task_characteristics.ui_heavy` is false, OR
-- `analysis/design-context/mockups/` is already populated (Step 4 ingested external mockups — no need to regenerate ASCII)
+- `analysis/design-context/mockups/` is already populated (Step 4 ingested external mockups — no need to regenerate)
 
-**Context to pass**: Gap analysis, scope decisions, component choices, `analysis/design-context/INDEX.md` path (if exists from Step 4)
+**Invoke mockup-studio** with:
+- `task_path`: this task directory
+- `output_subdir`: `analysis/design-context/mockups`
+- `format`: `orchestrator.options.mockup_format` (default `html`; mockup-studio auto-falls back to `ascii` when Node is unavailable)
+- `iteration`: `single` (one generation pass — the Phase 4 gate below handles approve/revise)
+- `emit_index_rows`: `true` (append stable-ID rows to `design-context/INDEX.md` for downstream `Visual References`)
+- `context`: gap analysis, scope decisions, component choices, `analysis/design-context/INDEX.md` path (if exists from Step 4)
+
+mockup-studio runs design-resource discovery first (binding standards/tokens/components), then renders. Record its returned `format_used`/`notes` in `phase_summaries.ui_mockups` (e.g. an html→ascii fallback). On the gate's "revise", re-invoke mockup-studio.
 
 → **MANDATORY GATE** — fires regardless of permission mode, session-reminders, or prior approval patterns. Invoke `ask_user` now. Proceeding without a user response is a protocol violation (orchestrator-patterns.md § 2 / § 2.1).
 
@@ -552,6 +560,7 @@ Development-specific fields in `orchestrator-state.yml`:
 orchestrator:
   options:
     html_output: true  # Seeded from .maister/config.yml at init (default true). Gates dashboard + HTML companions.
+    mockup_format: html  # Seeded from .maister/config.yml at init (default html). Passed to mockup-studio in Phase 4. Auto-falls back to ascii when Node unavailable.
     spec_audit_enabled: true
     skip_test_suite: true
     e2e_enabled: null
@@ -608,8 +617,9 @@ orchestrator:
 ├── analysis/
 │   ├── research-context/          # If --research provided
 │   ├── design-context/            # If mockups detected (Step 4 ingestion or Phase 4 generation)
-│   │   ├── mockups/               # HTML/PNG/screenshots (from product-design or inline prompt)
-│   │   ├── ascii/                 # ASCII mockups from Phase 4 ui-mockup-generator
+│   │   ├── mockups/               # HTML mockups (Phase 4 mockup-studio html path, product-design, or inline prompt) + PNG/screenshots
+│   │   ├── ascii/                 # ASCII mockups (Phase 4 mockup-studio ascii path)
+│   │   ├── design-resources.md    # Discovered design language (standards/tokens/components) — from mockup-studio
 │   │   ├── brief.md               # Product brief (when ingested from product-design task)
 │   │   ├── external-links.md      # Figma/Sketch/Zeplin URLs (no fetch — for reference)
 │   │   └── INDEX.md               # Screen/component inventory with stable IDs
@@ -733,7 +743,7 @@ Auto-detected when the argument resolves to a `.maister/tasks/product-design/*` 
 ```
 Auto-detected file paths (`.html`, `.png`, `.jpg`, `.jpeg`, `.gif`, `.svg`, `.pdf`) are copied into `design-context/mockups/`. Design-tool URLs (Figma, Sketch Cloud, Zeplin) are recorded in `design-context/external-links.md`.
 
-**Source 3 — Phase 4 ASCII generation**: When no external mockups exist and `task_characteristics.ui_heavy` is true, `ui-mockup-generator` produces ASCII mockups in `design-context/ascii/`.
+**Source 3 — Phase 4 generation via `mockup-studio`**: When no external mockups exist and `task_characteristics.ui_heavy` is true, Phase 4 invokes `mockup-studio` (Skill tool). It produces HTML mockups in `design-context/mockups/` by default, or ASCII in `design-context/ascii/` when `mockup_format: ascii` (or Node is unavailable).
 
 ### How Design Context Informs Each Phase
 
@@ -741,7 +751,7 @@ Auto-detected file paths (`.html`, `.png`, `.jpg`, `.jpeg`, `.gif`, `.svg`, `.pd
 
 | Phase | How Design Context is Used |
 |-------|------------------------------|
-| Phase 4 | Skipped if `design-context/mockups/` already populated; otherwise outputs to `design-context/ascii/` |
+| Phase 4 | Skipped if `design-context/mockups/` already populated; otherwise invokes `mockup-studio` → HTML in `design-context/mockups/` (default) or ASCII in `design-context/ascii/` |
 | Phase 5 | `specification-creator` reads from `design-context/` (single source); produces "Visual Design" section in spec.md |
 | Phase 7 | `implementation-planner` enumerates screens from `design-context/INDEX.md`, attaches required `Visual References` to UI task groups, produces `implementation/visual-coverage.md` proving every screen is covered by ≥1 group |
 | Phase 8 | `task-group-implementer` reads each referenced mockup before coding; layout, copy, field order, and explicit states are binding |

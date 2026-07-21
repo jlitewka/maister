@@ -9,6 +9,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const taskPathArg = process.argv.find(a => a.startsWith('--task-path='));
 const taskPath = taskPathArg ? taskPathArg.split('=')[1] : null;
 
+// Parse --output-subdir (relative to task path). Default: analysis/mockups (product-design convention).
+// The development workflow passes analysis/design-context/mockups so HTML lands in design-context.
+const outputSubdirArg = process.argv.find(a => a.startsWith('--output-subdir='));
+const outputSubdir = outputSubdirArg
+  ? outputSubdirArg.split('=')[1].split('/').filter(Boolean)
+  : ['analysis', 'mockups'];
+
 if (!taskPath) {
   console.warn('[visual-companion] No --task-path provided. Mockups will NOT be saved to disk.');
 }
@@ -33,7 +40,7 @@ function saveToDisk(mockup) {
     console.warn(`[visual-companion] Skipping disk save for "${mockup.id}" — no task path configured.`);
     return false;
   }
-  const dir = path.join(taskPath, 'analysis', 'mockups');
+  const dir = path.join(taskPath, ...outputSubdir);
   fs.mkdirSync(dir, { recursive: true });
 
   const html = renderScreen(mockup);
@@ -244,7 +251,7 @@ async function handler(req, res) {
 // PID file management
 function pidFilePath() {
   if (!taskPath) return null;
-  return path.join(taskPath, 'analysis', 'mockups', '.visual-companion.pid');
+  return path.join(taskPath, ...outputSubdir, '.visual-companion.pid');
 }
 
 function writePidFile() {
@@ -280,7 +287,7 @@ async function start() {
       await tryPort(port);
       activePort = port;
       console.log(`Visual companion server running at http://localhost:${port}`);
-      if (taskPath) console.log(`Saving mockups to: ${path.join(taskPath, 'analysis', 'mockups')}`);
+      if (taskPath) console.log(`Saving mockups to: ${path.join(taskPath, ...outputSubdir)}`);
       writePidFile();
       return;
     } catch (err) {

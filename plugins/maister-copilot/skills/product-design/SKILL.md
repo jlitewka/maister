@@ -48,7 +48,7 @@ Full framework rule: `../orchestrator-framework/references/orchestrator-patterns
    - Create `context/` folder with `README.md` instructing users to drop relevant files there (meeting transcripts, existing designs, spreadsheets, docs, PDFs, images)
    - Create `analysis/` and `outputs/` directories
 4. **Initialize State**: Create `orchestrator-state.yml` with design context schema (see Domain Context section)
-5. **Set up Operator Dashboard** (orchestrator-patterns.md § 8) — first read `.maister/config.yml` and set `orchestrator.options.html_output` (default true if the file/key is absent). **When `html_output` is false, SKIP this entire step** — no `dashboard.html`, no `dashboard-data.js`, no browser auto-open — and proceed. Otherwise: copy `../orchestrator-framework/assets/dashboard.html` to the task root as `dashboard.html`, write the initial `dashboard-data.js` (all phases pending, `task.type: "product-design"`), then **auto-open it in the user's browser** (`open` / `xdg-open` / `start` per platform, passing the plain absolute filesystem path — NEVER a hand-built `file://` URL; on failure just print the path — never block). On resume: re-copy `dashboard.html` only if missing; regenerate `dashboard-data.js` from state; then auto-open it in the browser again (same opener as a new task — the OS focuses an already-open tab rather than duplicating).
+5. **Set up Operator Dashboard** (orchestrator-patterns.md § 8) — first read `.maister/config.yml` and set `orchestrator.options.html_output` (default true if the file/key is absent), `orchestrator.options.mockup_format` (default `html`), and derive `orchestrator.options.visual_enabled`: **false** when the `--no-visual` flag was passed OR `mockup_format` is `ascii`; otherwise **true**. (So `mockup_format: ascii` and `--no-visual` are equivalent; the flag is a per-run override.) **When `html_output` is false, SKIP the rest of this step** — no `dashboard.html`, no `dashboard-data.js`, no browser auto-open — and proceed. Otherwise: copy `../orchestrator-framework/assets/dashboard.html` to the task root as `dashboard.html`, write the initial `dashboard-data.js` (all phases pending, `task.type: "product-design"`), then **auto-open it in the user's browser** (`open` / `xdg-open` / `start` per platform, passing the plain absolute filesystem path — NEVER a hand-built `file://` URL; on failure just print the path — never block). On resume: re-copy `dashboard.html` only if missing; regenerate `dashboard-data.js` from state; then auto-open it in the browser again (same opener as a new task — the OS focuses an already-open tab rather than duplicating).
 
 **Output**:
 ```
@@ -92,7 +92,8 @@ Use for **product and feature design**: defining what to build before building i
 |------|-------------|---------|
 | `references/characteristic-detection.md` | Phase 0 (before detecting characteristics) | Detection signals, phase activation matrix, adaptive depth scaling |
 | `references/interaction-patterns.md` | Phase 2 (before first interactive phase) | Cognitive modes, refinement loop pattern, ask_user option design |
-| `references/visual-companion.md` | Phase 7 (before visual prototyping) | Server architecture, communication protocol, graceful degradation |
+
+> Phase 7 (Visual Prototyping) delegates to the `maister-mockup-studio` skill, which owns the visual companion server and its reference docs (`skills/mockup-studio/references/visual-companion.md`, `design-resource-discovery.md`).
 
 ---
 
@@ -107,7 +108,7 @@ Use for **product and feature design**: defining what to build before building i
 | 4 | "Generate design alternatives" | "Generating design alternatives" | Always | solution-brainstormer (Task tool) |
 | 5 | "Converge on design direction" | "Converging on direction" | Always | Direct (interactive) |
 | 6 | "Specify features section-by-section" | "Specifying features" | Always (depth adapts) | Direct (interactive) |
-| 7 | "Create visual prototypes" | "Creating visual prototypes" | When `is_ui_focused` | Visual companion + ui-mockup-generator fallback |
+| 7 | "Create visual prototypes" | "Creating visual prototypes" | When `is_ui_focused` | mockup-studio (Skill tool) |
 | 8 | "Review & hand off product brief" | "Reviewing & assembling brief" | Always | Direct (interactive) |
 
 ---
@@ -559,88 +560,26 @@ ask_user — "Specification complete." Read `next_phase` from `orchestrator-stat
 
 > **Phase entry self-check**: Before executing this phase, locate the `ask_user` tool call from Phase 6 in this conversation. If you cannot point to its call ID, STOP and fire that gate now. State updates (`completed_phases`, `TaskUpdate`) without a corresponding `ask_user` call are protocol violations — never paper over a missed gate by updating state.
 
-**Purpose**: Generate visual mockups (HTML/CSS via visual companion or ASCII fallback) for UI-focused designs
-**Execute**: Visual companion + Direct, with ui-mockup-generator fallback
+**Purpose**: Generate visual mockups (HTML/CSS via the visual companion or ASCII fallback) for UI-focused designs
+**Execute**: Skill tool - `maister-mockup-studio`
 **Resume check**: If `analysis/mockups/` contains any files, skip to Phase 8
 
 **Skip if**: NOT `is_ui_focused`
 
-**Read `references/visual-companion.md` NOW** using the Read tool
+Mockup generation is owned by the `mockup-studio` skill — it runs design-resource discovery, manages the visual companion server + browser, generates user-facing wireframes, runs the interactive refinement loop, and falls back to ASCII when the visual companion is unavailable. This orchestrator delegates and keeps its phase gate.
 
-**Step 1: Start Visual Companion Server**
+**INVOKE NOW** — Skill tool - `maister-mockup-studio` with:
+- `task_path`: this task directory
+- `output_subdir`: `analysis/mockups`
+- `format`: `html` when `options.visual_enabled` is true, else `ascii` (so `mockup_format: ascii` / `--no-visual` force ASCII)
+- `iteration`: `full` (multi-round interactive refinement — add/revise screens, re-POST)
+- `emit_index_rows`: `false`
+- `context`: feature spec sections from Phase 6, selected approach from Phase 5, design context from Phase 1, persona workflows from Phase 3 (if greenfield). Tell it to generate **user-facing wireframes for the feature's actual screens** (e.g. "Add New Allergy Form", "Prescribing Alert Modal") — never generic placeholders or technical diagrams.
 
-The visual companion is the **default and preferred** rendering method. Always attempt it first.
-
-> **ANTI-PATTERN -- DO NOT DO THIS:**
-> - Skipping directly to ui-mockup-generator without attempting the visual companion first
-> - "ASCII mockups will be simpler..." -- STOP. Visual companion is the default. Try it first.
-> - "Let me create ASCII mockups..." -- STOP. Start the visual companion server.
-> - Generating ASCII art inline -- STOP. Always use the visual companion or delegate to ui-mockup-generator.
-
-1. If `options.visual_enabled` is `false` (`--no-visual` flag): skip directly to Fallback below.
-2. **Kill any stale visual companion server** from a previous run:
-   - `curl -s http://localhost:3847/status` — if it responds, check `taskPath` in the response
-   - If `taskPath` differs from current task path: `curl -s -X POST http://localhost:3847/shutdown` to stop it. Try ports 3847-3850.
-   - If `taskPath` matches current task: server is already running for this task — reuse it, skip to step 5.
-3. Start the visual companion server using Bash tool:
-   `node ${SKILL_DIR}/server/index.mjs --task-path=${task_path} &`
-4. Wait 1 second, then verify: `curl -s http://localhost:3847/status`
-   - If returns ok: visual companion is ready. Proceed to Step 2.
-   - If port 3847 fails: try `curl -s http://localhost:3848/status`, then 3849, then 3850.
-5. Open browser: Playwright MCP `browser_navigate` to `http://localhost:[port]` (fallback: `open http://localhost:[port]` via Bash, fallback: log URL for manual opening)
-6. Update state: `design_context.visual_companion.available = true`, store port
-7. **Only if ALL startup attempts fail** (server could not start on any port): proceed to Fallback below.
-
-**Step 2: Generate User-Facing Wireframes**
-
-> **CRITICAL: Generate USER-FACING WIREFRAMES, not technical diagrams.**
-> Mockups must show how the product/feature will look FROM THE END USER'S PERSPECTIVE. These are UI screens with real UI elements: navigation bars, forms, buttons, data tables, cards, modals, empty states, error states.
->
-> **Generate**: Screens specific to the feature being designed. Each screen should represent an actual view the end user will interact with. Include realistic content, not placeholder lorem ipsum.
->
-> **Do NOT generate**: Generic placeholder screens (e.g., empty "Dashboard" or "Settings" pages that aren't part of the feature). Do NOT generate system architecture diagrams, data flow charts, entity relationship diagrams, component dependency graphs, sequence diagrams, or any technical documentation. These belong in analysis artifacts, not visual prototyping.
-
-1. Generate HTML/CSS wireframe for each key screen identified in the feature spec. Only create screens that are directly relevant to the feature — do NOT create generic placeholder screens. Title each screen specifically (e.g., "Allergy List - Patient Summary View", "Add New Allergy Form", "Prescribing Alert Modal"). The visual companion maintains a gallery of all screens — the user can browse between them.
-2. **Cross-link screens for interactive navigation**: Add `data-screen="slug"` to clickable elements (buttons, links, cards) that should navigate to another screen. The slug is the lowercase-hyphenated title (e.g., title "Settings Page" → slug "settings-page"). Example: `<a data-screen="settings-page">Settings</a>` or `<button data-screen="user-profile">View Profile</button>`. The visual companion highlights these elements on hover and navigates on click.
-3. **Add annotations** to the `annotations` array in the POST body. Annotations are tooltips overlaid on mockup elements (togglable via the "Annotations" button in the UI). Use annotations for:
-   - Component reuse hints: `{"selector": ".patient-card", "note": "Reuses existing <PatientCard> component"}`
-   - Integration points: `{"selector": ".webhook-list", "note": "Fetches from existing /api/webhooks endpoint"}`
-   - Interaction hints: `{"selector": ".drag-handle", "note": "Drag to reorder items"}`
-   - Do NOT use annotations for feature descriptions or requirements — those belong in the spec, not overlaid on mockups.
-4. POST each screen to visual companion server: `POST http://localhost:[port]/update` with `{type, title, html, css, annotations}`. Each POST automatically saves the screen to `analysis/mockups/{slug}.html` on disk.
-4. Present for review in terminal (user views and interacts with the rendered prototype in browser gallery at `http://localhost:[port]/`)
-
-**Fallback (ONLY if visual companion startup failed OR `--no-visual` flag set):**
-
-> You should only reach this section if Step 1 failed (server could not start on any port) or the user explicitly passed `--no-visual`. If the visual companion is running, do NOT use this fallback.
-
-**INVOKE NOW** -- Task tool call:
-Task tool - `maister-ui-mockup-generator` subagent
-
-**Context to pass**: task_path, spec sections from Phase 6, design context from Phase 1, selected approach from Phase 5
-
-**SELF-CHECK**: Did you attempt to start the visual companion server first (Step 1)? If not, go back and try Step 1 before falling back to ASCII.
-
-**Step 3: Iterative Refinement**
-
-Enter **iterative refinement loop**:
-
-ask_user — with options:
-   - "Approve all screens and continue"
-   - "Change the layout of [screen name]"
-   - "Change the content of [screen name]"
-   - "Change the interactions"
-   - "Add another screen"
-   - "Let me explain my thinking"
-
-For revisions: regenerate the specific screen (re-POST to visual companion — it updates the existing screen in the gallery and on disk), present revised version.
-
-Track `refinement_iterations.phase_7`. Apply soft cap.
-
-Mockups are saved to `analysis/mockups/` automatically on each POST to the visual companion (no separate save step needed). For ASCII fallback, save mockup output to `analysis/mockups/ascii-mockups.md`.
+mockup-studio keeps the visual companion alive for browsing during this phase; it returns `mockup_files`, `format_used`, and `notes`.
 
 **Output**: `analysis/mockups/` (mockup files)
-**State**: Update `phase_summaries.visual_prototyping` with `mockup_references`, `design_context.visual_companion` status
+**State**: Update `phase_summaries.visual_prototyping` with `mockup_references` (= returned `mockup_files`), `design_context.visual_companion` status, and `design_context.design_resources` (from mockup-studio's discovery). Track `refinement_iterations.phase_7`.
 
 → **MANDATORY GATE** — fires regardless of permission mode, session-reminders, or prior approval patterns. Invoke `ask_user` now. Proceeding without a user response is a protocol violation (orchestrator-patterns.md § 2 / § 2.1).
 
@@ -766,7 +705,8 @@ design_context:
 
 options:
   html_output: true  # Seeded from .maister/config.yml at init (default true). Gates dashboard + HTML companions.
-  visual_enabled: null  # null=auto-detect, false=--no-visual flag
+  mockup_format: html  # Seeded from .maister/config.yml at init (default html). ascii ≡ --no-visual.
+  visual_enabled: null  # Derived at init: false when --no-visual OR mockup_format==ascii; else true. Phase 7 passes format=html when true, ascii when false, to mockup-studio.
 ```
 
 ---

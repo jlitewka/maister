@@ -1,14 +1,16 @@
 # Visual Companion
 
-Documents the browser-based visual companion architecture for the product-design orchestrator. Provides high-fidelity visual feedback by rendering HTML/CSS mockups in a browser during design sessions.
+Documents the browser-based visual companion architecture used by the `mockup-studio` skill (the HTML mockup path). Provides high-fidelity visual feedback by rendering HTML/CSS mockups in a browser during a mockup session. `mockup-studio` is invoked both standalone and by the development (Phase 4) and product-design (Phase 7) orchestrators, so this component is shared, not product-design-specific.
+
+The server lives at `${CLAUDE_PLUGIN_ROOT}/skills/mockup-studio/server/index.mjs`.
 
 ---
 
 ## Purpose
 
-Terminal-based ASCII mockups are useful but limited. For UI-focused design tasks, seeing actual rendered HTML/CSS in a browser gives qualitatively better feedback. The visual companion provides this without requiring any external tools, npm packages, or design software.
+Terminal-based ASCII mockups are useful but limited. For UI-focused tasks, seeing actual rendered HTML/CSS in a browser gives qualitatively better feedback. The visual companion provides this without requiring any external tools, npm packages, or design software.
 
-**Core idea**: Orchestrator generates HTML/CSS, sends to a local server, browser renders it, user reviews and provides feedback in the terminal. Browser is read-only visual output -- all interaction stays in the terminal via AskUserQuestion.
+**Core idea**: mockup-studio generates HTML/CSS, sends it to a local server, the browser renders it, the user reviews and provides feedback in the terminal. The browser is read-only visual output -- all interaction stays in the terminal via ask_user.
 
 ---
 
@@ -17,7 +19,7 @@ Terminal-based ASCII mockups are useful but limited. For UI-focused design tasks
 ```
 Orchestrator → POST /update → Node.js Server → SSE "refresh" → Browser (renders mockup)
                                                                    ↓ user views
-                                                              Terminal (AskUserQuestion)
+                                                              Terminal (ask_user)
 ```
 
 **Data flow is one-directional**: Orchestrator pushes content to server, server pushes to browser, user reviews in browser, feedback flows through terminal. The browser never sends data back to the orchestrator.
@@ -70,7 +72,8 @@ Example annotations:
 
 ### Startup
 
-1. Spawn server process: `node ${SKILL_DIR}/server/index.mjs`
+1. Spawn server process: `node ${CLAUDE_PLUGIN_ROOT}/skills/mockup-studio/server/index.mjs --task-path=${task_path} --output-subdir=${output_subdir} &`
+   - `--output-subdir` (relative to task path) controls where mockups are saved. Default `analysis/mockups` (product-design / standalone); development passes `analysis/design-context/mockups`.
 2. Port allocation: try 3847, fallback through 3848-3850
 3. Verify ready: poll `GET /status` until ok (timeout after 3 seconds)
 
@@ -83,12 +86,12 @@ Example annotations:
 ### Teardown
 
 Kill server via `POST /shutdown` endpoint on:
-- Workflow completion (Phase 8 sends POST /shutdown after final approval)
+- Mockup-generation completion (when mockup-studio owns the server lifecycle for this run)
 - Workflow cancellation
 
-**PID file**: Server writes its PID to `{taskPath}/analysis/mockups/.visual-companion.pid` on startup. Cleaned up on shutdown, SIGTERM, and SIGINT. Enables reliable process identification.
+**PID file**: Server writes its PID to `{taskPath}/{output_subdir}/.visual-companion.pid` on startup. Cleaned up on shutdown, SIGTERM, and SIGINT. Enables reliable process identification.
 
-**Stale server detection**: Phase 7 checks `/status` before starting a new server. The response includes `taskPath` — if it belongs to a different task, the server is stale and gets shut down via `POST /shutdown` before starting a new one.
+**Stale server detection**: mockup-studio checks `/status` before starting a new server. The response includes `taskPath` — if it belongs to a different task, the server is stale and gets shut down via `POST /shutdown` before starting a new one.
 
 ---
 
@@ -98,7 +101,7 @@ The visual companion is an enhancement, not a requirement. Every failure has a f
 
 | Scenario | Detection | Fallback |
 |---|---|---|
-| Node.js not available | `which node` fails | ASCII mockups via ui-mockup-generator agent |
+| Node.js not available | `which node` fails | ASCII mockups via ascii-mockup-generator agent |
 | Port 3847 in use | Server startup error (EADDRINUSE) | Try ports 3848-3850, then ASCII fallback |
 | Playwright MCP not configured | MCP tool call fails | Log URL for manual browser opening |
 | Browser fails to open | Playwright error + open command error | Log URL, continue with terminal-only review |
@@ -125,28 +128,27 @@ The server wraps mockup content in a base template that provides:
 
 ---
 
-## Integration with Phase 7 (Visual Prototyping)
+## Integration with mockup-studio (HTML path)
 
-Phase 7 follows this sequence when visual companion is available:
+The mockup-studio HTML path (SKILL.md Step 4a) follows this sequence when the visual companion is available:
 
-1. **Check availability**: `GET /status` to see if server is already running
-2. **Start server if needed**: Spawn Node.js process, verify ready
+1. **Check availability**: `GET /status` to see if server is already running (stale-server check by `taskPath`)
+2. **Start server if needed**: Spawn Node.js process with `--task-path` + `--output-subdir`, verify ready
 3. **Open browser**: Playwright MCP or open command or log URL
-4. **Generate mockup**: Create HTML/CSS from spec context and design decisions
+4. **Generate mockup**: Create HTML/CSS from the `context` grounding and the discovered design resources
 5. **Push to server**: `POST /update` with mockup content
-6. **Present for review**: AskUserQuestion in terminal (user views mockup in browser)
+6. **Present for review**: ask_user in terminal (user views mockup in browser) — for `iteration: full`
 7. **Iterative refinement**: Revise mockup, re-POST, re-review (follows refinement loop pattern)
-8. **Save approved mockup**: Write final HTML/CSS to `analysis/mockups/` in task directory
+8. **Saved automatically**: each POST saves the rendered HTML to `{output_subdir}/{slug}.html`
 
-**When visual companion is unavailable**: Phase 7 falls back to the `ui-mockup-generator` agent for ASCII mockups. The iterative refinement loop still applies -- only the rendering medium changes.
+**When the visual companion is unavailable**: mockup-studio falls back to the `ascii-mockup-generator` agent for ASCII mockups (SKILL.md Step 4b). The refinement loop still applies -- only the rendering medium changes.
 
 ### Mockup Generation Guidance
 
-The orchestrator generates mockup HTML/CSS based on:
-- Specification sections from Phase 6
-- Design decisions from Phase 5 convergence
-- Existing codebase UI patterns (from Phase 1 codebase analysis, if enhancement)
-- Persona workflows from Phase 3 (if greenfield)
+mockup-studio generates mockup HTML/CSS based on:
+- The `context` grounding passed by the caller (spec/gap-analysis/design-decisions excerpts, screen list)
+- The discovered design resources (standards, tokens, components — see `design-resource-discovery.md`)
+- Existing codebase UI patterns
 
 **Fidelity target**: Mid-fidelity. Enough structure and styling to evaluate layout, hierarchy, and flow. Not pixel-perfect production CSS. Focus on communicating the design intent, not building the final UI.
 
@@ -176,15 +178,15 @@ The server maintains a screen gallery in memory and persists to disk:
 - **Mockups array**: All POSTed screens (ordered, accessible by slug ID)
 - **SSE clients**: Active EventSource connections for refresh notifications
 - **Version counter**: Incremented on each update
-- **Disk persistence**: Each POST automatically saves the rendered HTML to `{task_path}/analysis/mockups/{slug}.html` — pass `--task-path` when starting the server
+- **Disk persistence**: Each POST automatically saves the rendered HTML to `{task_path}/{output_subdir}/{slug}.html` — pass `--task-path` (and optionally `--output-subdir`) when starting the server
 
 **Routes**:
 - `GET /` → Gallery index (grid of all screen cards)
 - `GET /screen/{id}` → Individual screen with prev/next navigation
 - `GET /latest` → Most recently POSTed screen (SSE refresh target)
 
-Screens are saved to disk immediately on POST — if the session drops, mockups survive in `analysis/mockups/`.
+Screens are saved to disk immediately on POST — if the session drops, mockups survive in `{output_subdir}/`.
 
 ---
 
-This reference provides the visual companion architecture and integration patterns. The server implementation lives in `server/index.mjs` and the orchestrator's SKILL.md defines the specific phase logic that uses the visual companion.
+This reference provides the visual companion architecture and integration patterns. The server implementation lives in `server/index.mjs` and `mockup-studio/SKILL.md` defines the generation flow that uses the visual companion.

@@ -203,14 +203,16 @@ An optional project-level config file at `.maister/config.yml` (sibling of `.mai
 
 ```yaml
 # Maister project configuration.
-html_output: true   # Generate the operator dashboard + HTML companion reports. false = markdown-only.
+html_output: true     # Generate the operator dashboard + HTML companion reports. false = markdown-only.
+mockup_format: html   # UI mockups: html (visual companion) or ascii (ascii-mockup-generator).
 ```
 
 | Key | Default | Effect |
 |-----|---------|--------|
 | `html_output` | `true` | When `false`, workflows skip the operator dashboard (§ 8) AND the HTML companion reports (§ 9): no `dashboard.html`/`dashboard-data.js`, no browser auto-open, no `.html` companions. Markdown artifacts, their § 7 TL;DR blocks, and `orchestrator-state.yml` are produced regardless. |
+| `mockup_format` | `html` | How UI mockups are rendered when a workflow generates them (development Phase 4, product-design Phase 7, standalone `/maister-mockup-studio`). `html` → the `mockup-studio` visual companion (browser preview, `.html` files). `ascii` → the `ascii-mockup-generator` agent (no Node/browser). Auto-falls back to `ascii` when Node.js is unavailable. Independent of `html_output` (mockups are design deliverables, not report companions). In product-design, `mockup_format: ascii` is equivalent to the `--no-visual` flag; the flag is a per-run override (flag > config). |
 
-**How it is read**: at initialization (§ 5) the orchestrator reads `.maister/config.yml` if present and seeds `orchestrator.options.html_output` into state (default `true` when the file or key is absent). All downstream gates read `options.html_output` from state, not the file — so resume is consistent and the file is read once.
+**How it is read**: at initialization (§ 5) the orchestrator reads `.maister/config.yml` if present and seeds `orchestrator.options.html_output` and `orchestrator.options.mockup_format` into state (defaults `true` / `html` when the file or key is absent). All downstream gates read these from state, not the file — so resume is consistent and the file is read once.
 
 ### Common Fields
 
@@ -233,6 +235,7 @@ orchestrator:
     code_review_enabled: true | false | null
     sequential: true | false | null  # Set by --sequential. Read by implementation-plan-executor Phase 2 to disable parallel wave dispatch.
     html_output: true | false        # Seeded from .maister/config.yml at init (default true). Gates dashboard + HTML companions — see "Project Configuration" below.
+    mockup_format: html | ascii      # Seeded from .maister/config.yml at init (default html). Passed to mockup-studio (development Phase 4 / product-design Phase 7). See "Project Configuration" below.
 
   # Timestamps
   created: [ISO 8601 timestamp]
